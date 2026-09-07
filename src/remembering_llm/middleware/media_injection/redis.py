@@ -7,13 +7,13 @@ from typing import TYPE_CHECKING
 from .middleware import BaseMediaStorage
 
 if TYPE_CHECKING:
-    from redis.asyncio import Redis
+    from redis.asyncio import Redis  # type: ignore
 
 
 class RedisMediaStorage(BaseMediaStorage):
     def __init__(self, redis_client: "Redis", ttl_seconds: int = 300):
         try:
-            import redis.asyncio  # noqa: F401
+            import redis.asyncio  # type: ignore  # noqa: F401
         except ImportError as e:
             raise ImportError(
                 "Для использования RedisMediaStorage установи пакет: pip install redis"

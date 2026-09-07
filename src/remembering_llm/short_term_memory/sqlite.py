@@ -1,11 +1,14 @@
 import asyncio
 import datetime as dt
 import json
+from typing import TYPE_CHECKING
 
-import aiosqlite
 from langchain_core.messages import BaseMessage
 
 from .base import _MESSAGE_TYPES, BaseShortTermMemory, MemoryMessage
+
+if TYPE_CHECKING:
+    import aiosqlite  # type: ignore
 
 
 def _serialize_message(message: BaseMessage) -> str:
@@ -18,15 +21,29 @@ def _deserialize_message(raw: str) -> BaseMessage:
     return cls(**obj["data"])
 
 
+def _check_aiosqlite() -> None:
+    try:
+        import aiosqlite  # type: ignore # noqa: F401
+    except ImportError as e:
+        raise ImportError(
+            "Для использования SqliteShortTermMemory установи пакет: pip install aiosqlite"
+        ) from e
+
+
 class SqliteShortTermMemory(BaseShortTermMemory):
     def __init__(self, db_path: str):
         super().__init__()
+        _check_aiosqlite()
+        import aiosqlite  # type: ignore
+
         self.db_path = db_path
         self._conn: aiosqlite.Connection | None = None
         self._lock = asyncio.Lock()  # доп. защита поверх WAL — сериализация записей
 
     async def initialize(self):
         """Вызвать один раз перед использованием (например, при старте приложения)."""
+        import aiosqlite
+
         self._conn = await aiosqlite.connect(self.db_path)
         await self._conn.execute("PRAGMA journal_mode=WAL")
         await self._conn.execute("""
