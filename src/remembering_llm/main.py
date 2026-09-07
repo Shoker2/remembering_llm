@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from collections import defaultdict
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from typing import Any
 
 from langchain.agents import create_agent
@@ -35,6 +35,9 @@ from .short_term_memory import BaseShortTermMemory, MemoryMessage
 
 logger = logging.getLogger()
 
+SystemPromptFn = Callable[["LLMContext"], str | Awaitable[str]]
+SystemPromptType = str | SystemPromptFn
+
 
 class RememberingLLM:
     def __init__(
@@ -44,7 +47,7 @@ class RememberingLLM:
         main_llm: BaseChatModel,
         summarizer_llm: BaseChatModel | None,
         fast_llm: BaseChatModel | None,
-        system_prompt: str = "",  # TODO
+        system_prompt: SystemPromptType = "",
         short_term_limit: int = 26,
         active_short_term_limit: int | None = None,
         top_k_memories: int = 10,
@@ -52,6 +55,8 @@ class RememberingLLM:
         middleware: Sequence[AgentMiddleware[StateT_co, ContextT]] = (),
     ):
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+
+        self._system_prompt = system_prompt
 
         self.long_term_memory = long_term_memory
         self.top_k_memories = top_k_memories
@@ -72,7 +77,7 @@ class RememberingLLM:
 
         self.prompt = ChatPromptTemplate.from_messages(
             [
-                ("system", system_prompt),
+                ("system", "{system_prompt}"),
                 (
                     "system",
                     (
@@ -96,6 +101,9 @@ class RememberingLLM:
                 "memories": RunnableLambda(self._get_memories),
                 "chat_history": lambda _: context.chat_history,
                 "current_message": lambda _: [context.current_message],
+                "system_prompt": RunnableLambda(self._resolve_system_prompt).bind(
+                    context=context
+                ),
             }
             | self.prompt
             | debug_prompt
@@ -140,6 +148,14 @@ class RememberingLLM:
 
         context.current_message = current_message
         return current_message
+
+    async def _resolve_system_prompt(self, context: "LLMContext") -> str:
+        if callable(self._system_prompt):
+            result = self._system_prompt(context)
+            if hasattr(result, "__await__"):
+                result = await result
+            return result
+        return self._system_prompt
 
     async def _add_request_analysis(
         self, current_message: HumanMessage, context: LLMContext
