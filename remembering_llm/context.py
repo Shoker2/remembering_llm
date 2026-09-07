@@ -1,10 +1,18 @@
+from typing import TYPE_CHECKING
+
 from langchain_core.messages import BaseMessage, HumanMessage
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from .request_analysis import RequestAnalysis
 
+if TYPE_CHECKING:
+    from .main import RememberingLLM
+
 
 class LLMContext(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    remembering_llm: "RememberingLLM | None" = None
     user_id: str | None = None
     request: str | None = None
     current_message: HumanMessage | None = None

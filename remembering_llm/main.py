@@ -1,16 +1,26 @@
 import asyncio
 import logging
 from collections import defaultdict
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable, Sequence
+from typing import Any
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain.agents import create_agent
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+)
 from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompt_values import ChatPromptValue
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import (
     RunnableGenerator,
     RunnableLambda,
     RunnableSerializable,
 )
+from langchain_core.tools import BaseTool
 from mem0 import AsyncMemory
 
 from .context import LLMContext
@@ -18,7 +28,7 @@ from .llm_models import MainLLMModel, SearchQueryLLMModel, SummarizerLLMModel
 from .request_analysis import RequestAnalysis
 from .short_term_memory import BaseShortTermMemory, MemoryMessage
 
-# TODO: Возможность использовать tools
+# TODO: Возиожность использования медиафайлов
 logger = logging.getLogger()
 
 
@@ -31,9 +41,10 @@ class RememberingLLM:
         summarizer_llm: SummarizerLLMModel | None,
         fast_llm: SearchQueryLLMModel | None,
         system_prompt: str = "",
-        short_term_limit: int = 20,
+        short_term_limit: int = 26,
         active_short_term_limit: int | None = None,
         top_k_memories: int = 10,
+        tools: Sequence[BaseTool | Callable[..., Any] | dict[str, Any]] | None = None,
     ):
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
@@ -47,7 +58,11 @@ class RememberingLLM:
             else short_term_limit // 2
         )
 
-        self.llm = main_llm
+        self._llm_agent = create_agent(
+            model=main_llm,
+            tools=tools,
+        )
+
         self._summarizer_llm = summarizer_llm
         self._fast_llm = fast_llm
 
@@ -80,7 +95,7 @@ class RememberingLLM:
             }
             | self.prompt
             | debug_prompt
-            | RunnableGenerator(self._stream_llm_with_lock).bind(context=context)
+            | RunnableGenerator(self._stream_llm).bind(context=context)
             | StrOutputParser()
             | RunnableGenerator(self._upsert_short_term_memory).bind(context=context)
         )
@@ -116,6 +131,7 @@ class RememberingLLM:
 
         context.user_id = user_id
         context.request = request
+        context.remembering_llm = self
 
         current_message = HumanMessage(content=request)
         context.current_message = current_message
@@ -173,16 +189,8 @@ class RememberingLLM:
     async def _upsert_short_term_memory(
         self, chunks: AsyncIterator[str], context: LLMContext
     ):
-        full_text = ""
-
         async for chunk in chunks:
-            full_text += chunk
             yield chunk
-
-        await self.short_term_memory.add_message(
-            user_id=context.user_id,
-            message=AIMessage(content=full_text),
-        )
 
         asyncio.create_task(self._compact_memory(context.user_id))
 
@@ -279,19 +287,33 @@ class RememberingLLM:
         result = await self._fast_llm.ainvoke(prompt)
         return result.content
 
-    async def _stream_llm_with_lock(
-        self, input_iter: AsyncIterator, context: LLMContext
+    async def _stream_llm(
+        self, agent_input_stream: AsyncIterator[dict], context: LLMContext
     ) -> AsyncIterator[str]:
-        async for prompt_value in input_iter:
-            async with self._locks[context.user_id]:
-                try:
-                    async for chunk in self.llm.astream(prompt_value):
-                        yield chunk
-                finally:
-                    pass
+        final_messages = []
+        agent_input: ChatPromptValue = None
+        async for item in agent_input_stream:
+            agent_input = item
+
+        async for mode, chunk in self._llm_agent.astream(
+            agent_input,
+            stream_mode=["messages", "values"],
+            config={"configurable": {"context": context}},
+        ):
+            if mode == "messages":
+                token, _ = chunk
+                if isinstance(token, AIMessageChunk) and token.content:
+                    yield token.content
+
+            elif mode == "values":
+                final_messages = chunk["messages"]
+
+        new_messages = final_messages[len(agent_input.messages) :]
+        for msg in new_messages:
+            await self.short_term_memory.add_message(context.user_id, msg)
 
 
-def debug_prompt(a):
+def debug_prompt(a: ChatPromptValue):
     text = "debug_prompt:"
 
     for message in a.messages:
@@ -300,3 +322,6 @@ def debug_prompt(a):
 
     logger.info(text)
     return a
+
+
+LLMContext.model_rebuild()
