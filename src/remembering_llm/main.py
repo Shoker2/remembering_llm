@@ -10,6 +10,7 @@ from langchain.agents.middleware.types import (
     ContextT,
     StateT_co,
 )
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import (
     AIMessage,
     AIMessageChunk,
@@ -29,7 +30,6 @@ from langchain_core.tools import BaseTool
 from mem0 import AsyncMemory
 
 from .context import LLMContext
-from .llm_models import MainLLMModel, SearchQueryLLMModel, SummarizerLLMModel
 from .request_analysis import RequestAnalysis
 from .short_term_memory import BaseShortTermMemory, MemoryMessage
 
@@ -41,10 +41,10 @@ class RememberingLLM:
         self,
         long_term_memory: AsyncMemory,
         short_term_memory: BaseShortTermMemory,
-        main_llm: MainLLMModel,
-        summarizer_llm: SummarizerLLMModel | None,
-        fast_llm: SearchQueryLLMModel | None,
-        system_prompt: str = "",
+        main_llm: BaseChatModel,
+        summarizer_llm: BaseChatModel | None,
+        fast_llm: BaseChatModel | None,
+        system_prompt: str = "",  # TODO
         short_term_limit: int = 26,
         active_short_term_limit: int | None = None,
         top_k_memories: int = 10,

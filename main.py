@@ -7,16 +7,17 @@ from io import BytesIO
 import httpx
 from dotenv import load_dotenv
 from langchain_core.tools import tool
+from langchain_openai import ChatOpenAI
 from mem0 import AsyncMemory
 from mem0.configs.base import EmbedderConfig, LlmConfig, MemoryConfig, VectorStoreConfig
 
 from remembering_llm import RememberingLLM
-from remembering_llm.llm_models import MainLLMModel, SummarizerLLMModel
 from remembering_llm.middleware.media_injection import (
-    InMemoryMediaStorage,
     MediaInjectionMiddleware,
     media_tool,
 )
+from remembering_llm.middleware.media_injection.builders import build_image_block
+from remembering_llm.middleware.media_injection.storage import InMemoryMediaStorage
 from remembering_llm.short_term_memory import SqliteShortTermMemory
 from remembering_llm.tools import add_memory, search_memory
 
@@ -78,7 +79,7 @@ media_injection_middleware = MediaInjectionMiddleware(storage=media_storage)
 MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024
 
 
-@media_tool
+@media_tool(build_image_block)
 @tool
 async def download_image(url: str) -> str:
     """Скачать изображение по URL из интернета.
@@ -125,21 +126,21 @@ llm = RememberingLLM(
         "Ты асситент пользователя, играющий роль Цундере с именем Моника.\n"
         "Твои ответы должны выглядеть как ответы в реальной жизни, то есть без смайликов, без форматирования и большого объёма текста"
     ),
-    main_llm=MainLLMModel(
+    main_llm=ChatOpenAI(
         base_url=BASE_URL,
         model=MODEL,
         api_key=API_KEY,
         timeout=30,
         max_retries=3,
     ),
-    summarizer_llm=SummarizerLLMModel(
+    summarizer_llm=ChatOpenAI(
         base_url=BASE_URL,
         model=MODEL,
         api_key=API_KEY,
         timeout=30,
         max_retries=3,
     ),
-    fast_llm=SummarizerLLMModel(
+    fast_llm=ChatOpenAI(
         base_url=BASE_URL,
         model=MODEL,
         api_key=API_KEY,

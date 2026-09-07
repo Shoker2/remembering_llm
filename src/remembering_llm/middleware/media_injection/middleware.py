@@ -1,7 +1,5 @@
-import base64
 import json
 import logging
-from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from io import BytesIO
 from typing import Any
@@ -11,30 +9,42 @@ from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
 
+from .storage import BaseMediaStorage
+
 logger = logging.getLogger()
 
-MEDIA_TOOLS: set[str] = set()
+ContentBlockBuilder = Callable[[BytesIO, str], list[dict] | dict]
+
+# имя tool -> builder, знающий, как собрать content-блок(и) под этот тип медиа
+MEDIA_TOOLS: dict[str, ContentBlockBuilder] = {}
 
 
-def media_tool(func):
+def media_tool(builder: ContentBlockBuilder):
     """Регистрирует tool как источник медиафайлов.
-    Такой tool должен вернуть строку JSON: {"media_id": "...", "media_type": "image"}
-    и заранее положить данные через storage.put_media(...)."""
-    MEDIA_TOOLS.add(func.name)
-    return func
 
+    Такой tool должен вернуть JSON: {"media_id": "...", "media_type": "..."}
+    и заранее положить данные через storage.put_media(...).
 
-class BaseMediaStorage(ABC):
-    @abstractmethod
-    async def put_media(self, buffer: BytesIO, mime_type: str) -> str:
-        """Сохраняет данные, возвращает media_id."""
-        ...
+    builder — функция (buffer, mime_type) -> content-блок(и), определяющая,
+    как именно данные превращаются в формат, понятный конкретной модели.
+    По умолчанию — стандартный image_url-блок.
 
-    @abstractmethod
-    async def get_media(self, media_id: str) -> tuple[BytesIO, str] | None:
-        """Возвращает (buffer, mime_type) по id, либо None, если не найдено.
-        Реализация сама решает, удалять ли запись после чтения."""
-        ...
+    Пример:
+        @media_tool(_build_image_block)
+        @tool
+        async def generate_chart(data: str) -> str: ...
+
+        # или с дефолтным builder'ом для картинок:
+        @media_tool()
+        @tool
+        async def get_local_image(path: str) -> str: ...
+    """
+
+    def decorator(func):
+        MEDIA_TOOLS[func.name] = builder
+        return func
+
+    return decorator
 
 
 class MediaInjectionMiddleware(AgentMiddleware):
@@ -49,7 +59,8 @@ class MediaInjectionMiddleware(AgentMiddleware):
         result = await handler(request)
         tool_name = request.tool_call.get("name")
 
-        if not isinstance(result, ToolMessage) or tool_name not in MEDIA_TOOLS:
+        builder = MEDIA_TOOLS.get(tool_name)
+        if not isinstance(result, ToolMessage) or builder is None:
             return result
 
         media_info = await self._extract_media_info(result.content)
@@ -57,7 +68,7 @@ class MediaInjectionMiddleware(AgentMiddleware):
             logger.warning(f"Не удалось извлечь медиа-данные из результата {tool_name}")
             return result
 
-        new_message = self._build_message_for_media(media_info)
+        new_message = self._build_message(media_info, builder)
         if new_message is None:
             return result
 
@@ -70,7 +81,9 @@ class MediaInjectionMiddleware(AgentMiddleware):
             logger.warning("Результат media_tool не является валидным JSON")
             return None
 
-        media_id = info.get("media_id")
+        media_id = info["media_id"]
+        media_type = info["media_type"]
+
         if media_id is None:
             logger.warning("В результате отсутствует media_id")
             return None
@@ -84,21 +97,17 @@ class MediaInjectionMiddleware(AgentMiddleware):
         return {
             "buffer": buffer,
             "mime_type": mime_type,
-            "media_type": info.get("media_type", "image"),
+            "media_type": media_type,
         }
 
-    def _build_message_for_media(self, media_info: dict) -> HumanMessage | None:
-        buffer: BytesIO = media_info["buffer"]
-        mime = media_info["mime_type"]
+    def _build_message(
+        self, media_info: dict, builder: ContentBlockBuilder
+    ) -> HumanMessage | None:
+        try:
+            block = builder(media_info["buffer"], media_info["mime_type"], media_info)
+        except Exception:
+            logger.exception("Ошибка при сборке content-блока для медиа")
+            return None
 
-        buffer.seek(0)
-        encoded = base64.b64encode(buffer.read()).decode("utf-8")
-
-        return HumanMessage(
-            content=[
-                {
-                    "type": "image_url",
-                    "image_url": {"url": f"data:{mime};base64,{encoded}"},
-                }
-            ]
-        )
+        content = block if isinstance(block, list) else [block]
+        return HumanMessage(content=content)

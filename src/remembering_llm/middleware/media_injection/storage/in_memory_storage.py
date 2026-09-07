@@ -1,7 +1,7 @@
 import uuid
 from io import BytesIO
 
-from .middleware import BaseMediaStorage
+from .base import BaseMediaStorage
 
 
 class InMemoryMediaStorage(BaseMediaStorage):

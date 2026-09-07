@@ -12,3 +12,4 @@ uv.lock
 tmp/
 test.py
 .env
+.vscode

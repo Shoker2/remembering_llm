@@ -4,7 +4,7 @@ import uuid
 from io import BytesIO
 from typing import TYPE_CHECKING
 
-from .middleware import BaseMediaStorage
+from .base import BaseMediaStorage
 
 if TYPE_CHECKING:
     from redis.asyncio import Redis  # type: ignore
