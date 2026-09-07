@@ -5,6 +5,11 @@ from collections.abc import AsyncIterator, Callable, Sequence
 from typing import Any
 
 from langchain.agents import create_agent
+from langchain.agents.middleware.types import (
+    AgentMiddleware,
+    ContextT,
+    StateT_co,
+)
 from langchain_core.messages import (
     AIMessage,
     AIMessageChunk,
@@ -45,6 +50,7 @@ class RememberingLLM:
         active_short_term_limit: int | None = None,
         top_k_memories: int = 10,
         tools: Sequence[BaseTool | Callable[..., Any] | dict[str, Any]] | None = None,
+        middleware: Sequence[AgentMiddleware[StateT_co, ContextT]] = (),
     ):
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
@@ -59,8 +65,7 @@ class RememberingLLM:
         )
 
         self._llm_agent = create_agent(
-            model=main_llm,
-            tools=tools,
+            model=main_llm, tools=tools, middleware=middleware
         )
 
         self._summarizer_llm = summarizer_llm

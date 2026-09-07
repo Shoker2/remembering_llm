@@ -8,6 +8,7 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
+    "aiofiles>=25.1.0",
     "aiosqlite>=0.22.1",
     "chromadb>=1.5.9",
     "httpx>=0.28.1",
@@ -15,5 +16,6 @@ dependencies = [
     "langchain-openai>=1.6.0",
     "mem0ai[nlp]>=2.0.18",
     "python-dotenv>=1.2.3",
+    "redis>=8.1.0",
     "sentence-transformers>=6.0.0",
 ]

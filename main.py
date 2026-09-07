@@ -1,6 +1,8 @@
 import asyncio
+import json
 import logging
 import os
+from io import BytesIO
 
 import httpx
 from dotenv import load_dotenv
@@ -10,6 +12,11 @@ from mem0.configs.base import EmbedderConfig, LlmConfig, MemoryConfig, VectorSto
 
 from remembering_llm import RememberingLLM
 from remembering_llm.llm_models import MainLLMModel, SummarizerLLMModel
+from remembering_llm.middleware.media_injection import (
+    InMemoryMediaStorage,
+    MediaInjectionMiddleware,
+    media_tool,
+)
 from remembering_llm.short_term_memory import SqliteShortTermMemory
 from remembering_llm.tools import add_memory, search_memory
 
@@ -65,7 +72,51 @@ async def get_weather(city: str) -> str:
         return f"{current['temp_c']}°C, {current['condition']['text']}, ветер {current['wind_kph']} км/ч"
 
 
+media_storage = InMemoryMediaStorage()
+media_injection_middleware = MediaInjectionMiddleware(storage=media_storage)
+
+MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024
+
+
+@media_tool
+@tool
+async def download_image(url: str) -> str:
+    """Скачать изображение по URL из интернета.
+    Используй, когда пользователь прислал ссылку на картинку или просит показать
+    изображение по конкретному адресу."""
+
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        return json.dumps(
+            {"error": f"Не удалось скачать: сервер вернул {e.response.status_code}"}
+        )
+    except httpx.RequestError as e:
+        return json.dumps({"error": f"Не удалось скачать: {e}"})
+
+    content_type = response.headers.get("content-type", "")
+    if not content_type.startswith("image/"):
+        return json.dumps(
+            {
+                "error": f"По ссылке не изображение, а {content_type or 'неизвестный тип'}"
+            }
+        )
+
+    if len(response.content) > MAX_IMAGE_SIZE_BYTES:
+        return json.dumps({"error": "Изображение слишком большое (>10 МБ)"})
+
+    mime_type = content_type.split(";")[0].strip()  # отсекаем charset и т.п., если есть
+    buffer = BytesIO(response.content)
+
+    media_id = await media_storage.put_media(buffer, mime_type=mime_type)
+
+    return json.dumps({"media_id": media_id, "media_type": "image"})
+
+
 short_term_memory = SqliteShortTermMemory("./tmp/chroma/short_term.db")
+
 
 llm = RememberingLLM(
     long_term_memory=AsyncMemory.from_config(CONFIG.model_dump()),
@@ -96,7 +147,8 @@ llm = RememberingLLM(
         timeout=30,
         temperature=0.2,
     ),
-    tools=[add_memory, search_memory, get_weather],
+    tools=[add_memory, search_memory, get_weather, download_image],
+    middleware=[media_injection_middleware],
 )
 
 
@@ -122,7 +174,7 @@ async def test():
     await short_term_memory.initialize()
 
     print()
-    print(await llm.fetch_chat_history(user_id=USER_ID))
+    # print(await llm.fetch_chat_history(user_id=USER_ID))
     # print(await llm.get_analyzed_request("Помнишь ли кто ты и кто я?", user_id=USER_ID))
     # print(await llm.get_analyzed_request("Поставь чайник на плиту", user_id=USER_ID))
     print()
