@@ -171,13 +171,37 @@ async def main():
 
 
 async def test():
+    import base64
+
     await short_term_memory.initialize()
 
     print()
     # print(await llm.fetch_chat_history(user_id=USER_ID))
-    # print(await llm.get_analyzed_request("Помнишь ли кто ты и кто я?", user_id=USER_ID))
-    # print(await llm.get_analyzed_request("Поставь чайник на плиту", user_id=USER_ID))
+    # print(await llm.short_term_memory.get_dialog(user_id=USER_ID))
     print()
+
+    async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
+        response = await client.get(
+            "https://s.mediasalt.ru/cache/content/data/images/299/299370/original.jpg"
+        )
+        response.raise_for_status()
+
+    content_type = (
+        response.headers.get("content-type", "image/jpeg").split(";")[0].strip()
+    )
+    encoded = base64.b64encode(response.content).decode("utf-8")
+
+    llm_chain = llm.get_chain(USER_ID)
+    async for chunk in llm_chain.astream(
+        [
+            {"type": "text", "text": "Что тут такое?"},
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:{content_type};base64,{encoded}"},
+            },
+        ]
+    ):
+        print(chunk, end="", flush=True)
 
 
 asyncio.run(main())

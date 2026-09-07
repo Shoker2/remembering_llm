@@ -33,7 +33,6 @@ from .llm_models import MainLLMModel, SearchQueryLLMModel, SummarizerLLMModel
 from .request_analysis import RequestAnalysis
 from .short_term_memory import BaseShortTermMemory, MemoryMessage
 
-# TODO: Возиожность использования медиафайлов
 logger = logging.getLogger()
 
 
@@ -110,19 +109,11 @@ class RememberingLLM:
 
         for message in await self.short_term_memory.get_dialog(user_id=user_id):
             if message.message.type == "human":
-                message.message.content = self.format_message(message)
+                message.message.content = format_message(message)
 
             messages.append(message.message)
 
         return messages
-
-    @staticmethod
-    def format_history(chat_history: list[BaseMessage]):
-        return "\n".join([f"{msg.type}: {msg.content}" for msg in chat_history])
-
-    @staticmethod
-    def format_message(message: MemoryMessage):
-        return f"[{message.timestamp.isoformat()}] {message.message.content}"
 
     async def search_memories(self, request: str, user_id):
         return await self.long_term_memory.search(
@@ -131,24 +122,33 @@ class RememberingLLM:
             top_k=self.top_k_memories,
         )
 
-    async def _init_context(self, request, context: LLMContext, user_id):
+    async def _init_context(
+        self,
+        request: HumanMessage | str | list[str | dict[Any, Any]],
+        context: LLMContext,
+        user_id,
+    ) -> HumanMessage:
         context.clear()
 
         context.user_id = user_id
-        context.request = request
         context.remembering_llm = self
 
-        current_message = HumanMessage(content=request)
+        if isinstance(request, HumanMessage):
+            current_message = request
+        else:
+            current_message = HumanMessage(content=request)
+
         context.current_message = current_message
+        return current_message
 
-        return request
-
-    async def _add_request_analysis(self, request, context: LLMContext):
+    async def _add_request_analysis(
+        self, current_message: HumanMessage, context: LLMContext
+    ):
         chat_history = await self.fetch_chat_history(user_id=context.user_id)
 
         prompt = (
             "Проанализируй сообщение пользователя.\n\n"
-            f"История:\n{self.format_history(chat_history[-self.active_short_term_limit:])}\n\nСообщение: {request}"
+            f"История:\n{format_history(chat_history[-self.active_short_term_limit:])}\n\nСообщение: {extract_text(current_message.content)}"
         )
         analysis = await self._fast_llm.with_structured_output(RequestAnalysis).ainvoke(
             prompt
@@ -158,7 +158,7 @@ class RememberingLLM:
         context.analysis = analysis
         context.chat_history = chat_history
 
-        return request
+        return current_message
 
     async def _get_memories(self, context: LLMContext) -> str:
         if context.analysis.needs_memory_search:
@@ -182,11 +182,11 @@ class RememberingLLM:
         return "\n".join(result)
 
     async def _append_short_term_user_message(
-        self, request: str, context: LLMContext
+        self, _, context: LLMContext
     ) -> LLMContext:
         await self.short_term_memory.add_message(
             user_id=context.user_id,
-            message=HumanMessage(content=context.request),
+            message=context.current_message,
         )
 
         return context
@@ -262,7 +262,7 @@ class RememberingLLM:
             old_summary = chat_history[0].content
             rest = chat_history[1:]
 
-        messages = self.format_history(rest)
+        messages = format_history(rest)
 
         prompt = (
             f"Текущая сводка диалога:\n{old_summary or '(сводки пока нет)'}\n\n"
@@ -283,7 +283,7 @@ class RememberingLLM:
             return request
 
         prompt = (
-            f"История диалога:\n{self.format_history(chat_history)}\n\n"
+            f"История диалога:\n{format_history(chat_history)}\n\n"
             f"Текущее сообщение пользователя: {request}\n\n"
             "Сформулируй короткий поисковый запрос (не более 10 слов) для поиска "
             "релевантной информации о пользователе в базе памяти. "
@@ -330,3 +330,55 @@ def debug_prompt(a: ChatPromptValue):
 
 
 LLMContext.model_rebuild()
+
+
+def format_history(chat_history: list[BaseMessage]):
+    return "\n".join(
+        f"{msg.type}: {describe_content(msg.content)}" for msg in chat_history
+    )
+
+
+def format_message(message: MemoryMessage):
+    return f"[at {message.timestamp.isoformat()}] {describe_content(message.message.content)}"
+
+
+def describe_content(content: str | list[dict]) -> str:
+    """Текст + пометки медиа-блоков, единая логика для любого места,
+    где content нужно превратить в читаемую строку."""
+    text = extract_text(content)
+
+    media_types = []
+    if isinstance(content, list):
+        media_types = [
+            _describe_media_block(b) for b in content if b.get("type") != "text"
+        ]
+
+    suffix = f" [{', '.join(media_types)}]" if media_types else ""
+    return f"{text}{suffix}"
+
+
+def extract_text(content: str | list[str | dict[Any, Any]]) -> str:
+    """Достаёт только текстовую часть из content, независимо от того,
+    простая это строка или список мультимодальных блоков."""
+    if isinstance(content, str):
+        return content
+    text_parts = [block["text"] for block in content if block.get("type") == "text"]
+    return " ".join(text_parts)
+
+
+def _describe_media_block(block: dict) -> str:
+    block_type = block.get("type", "unknown")
+
+    if block_type == "image_url":
+        url = block.get("image_url", {}).get("url", "")
+        if url.startswith("data:"):
+            return url.split(";")[0].removeprefix("data:")
+        return "image"
+
+    if block_type == "input_audio":
+        return block.get("input_audio", {}).get("format", "audio")
+
+    if block_type in ("file", "document"):
+        return block.get("mime_type") or block.get("source_type") or "file"
+
+    return block_type
