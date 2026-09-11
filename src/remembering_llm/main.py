@@ -101,9 +101,7 @@ class RememberingLLM:
                 "memories": RunnableLambda(self._get_memories),
                 "chat_history": lambda _: context.chat_history,
                 "current_message": lambda _: context.current_messages,
-                "system_prompt": RunnableLambda(self._resolve_system_prompt).bind(
-                    context=context
-                ),
+                "system_prompt": RunnableLambda(self._resolve_system_prompt),
             }
             | self.prompt
             | debug_prompt
