@@ -100,7 +100,7 @@ class RememberingLLM:
             | {
                 "memories": RunnableLambda(self._get_memories),
                 "chat_history": lambda _: context.chat_history,
-                "current_message": lambda _: [context.current_message],
+                "current_message": lambda _: context.current_messages,
                 "system_prompt": RunnableLambda(self._resolve_system_prompt).bind(
                     context=context
                 ),
@@ -132,22 +132,29 @@ class RememberingLLM:
 
     async def _init_context(
         self,
-        request: HumanMessage | str | list[str | dict[Any, Any]],
+        request: HumanMessage
+        | str
+        | list[str | dict[Any, Any]]
+        | list[HumanMessage],
         context: LLMContext,
         user_id,
-    ) -> HumanMessage:
+    ) -> list[HumanMessage]:
         context.clear()
 
         context.user_id = user_id
         context.remembering_llm = self
 
         if isinstance(request, HumanMessage):
-            current_message = request
+            current_messages = [request]
+        elif isinstance(request, list) and request and isinstance(request[0], HumanMessage):
+            current_messages = request
+        elif isinstance(request, list) and not request:
+            raise ValueError("request list must not be empty")
         else:
-            current_message = HumanMessage(content=request)
+            current_messages = [HumanMessage(content=request)]
 
-        context.current_message = current_message
-        return current_message
+        context.current_messages = current_messages
+        return current_messages
 
     async def _resolve_system_prompt(self, context: "LLMContext") -> str:
         if callable(self._system_prompt):
@@ -158,13 +165,14 @@ class RememberingLLM:
         return self._system_prompt
 
     async def _add_request_analysis(
-        self, current_message: HumanMessage, context: LLMContext
+        self, current_messages: list[HumanMessage], context: LLMContext
     ):
         chat_history = await self.fetch_chat_history(user_id=context.user_id)
 
         prompt = (
             "Проанализируй сообщение пользователя.\n\n"
-            f"История:\n{format_history(chat_history[-self.active_short_term_limit:])}\n\nСообщение: {extract_text(current_message.content)}"
+            f"История:\n{format_history(chat_history[-self.active_short_term_limit:])}\n\n"
+            f"Сообщение:\n{format_history(current_messages)}"
         )
         analysis = await self._fast_llm.with_structured_output(RequestAnalysis).ainvoke(
             prompt
@@ -174,7 +182,7 @@ class RememberingLLM:
         context.analysis = analysis
         context.chat_history = chat_history
 
-        return current_message
+        return current_messages
 
     async def _get_memories(self, context: LLMContext) -> str:
         if context.analysis.needs_memory_search:
@@ -200,10 +208,11 @@ class RememberingLLM:
     async def _append_short_term_user_message(
         self, _, context: LLMContext
     ) -> LLMContext:
-        await self.short_term_memory.add_message(
-            user_id=context.user_id,
-            message=context.current_message,
-        )
+        for message in context.current_messages:
+            await self.short_term_memory.add_message(
+                user_id=context.user_id,
+                message=message,
+            )
 
         return context
 

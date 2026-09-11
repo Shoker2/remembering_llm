@@ -14,7 +14,7 @@ class LLMContext(BaseModel):
 
     remembering_llm: "RememberingLLM | None" = None
     user_id: str | None = None
-    current_message: HumanMessage | None = None
+    current_messages: list[HumanMessage] | None = None
     analysis: RequestAnalysis | None = None
     chat_history: list[BaseMessage] | None = None
 
