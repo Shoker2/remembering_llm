@@ -130,10 +130,7 @@ class RememberingLLM:
 
     async def _init_context(
         self,
-        request: HumanMessage
-        | str
-        | list[str | dict[Any, Any]]
-        | list[HumanMessage],
+        request: HumanMessage | str | list[str | dict[Any, Any]] | list[HumanMessage],
         context: LLMContext,
         user_id,
     ) -> list[HumanMessage]:
@@ -144,7 +141,11 @@ class RememberingLLM:
 
         if isinstance(request, HumanMessage):
             current_messages = [request]
-        elif isinstance(request, list) and request and isinstance(request[0], HumanMessage):
+        elif (
+            isinstance(request, list)
+            and request
+            and isinstance(request[0], HumanMessage)
+        ):
             current_messages = request
         elif isinstance(request, list) and not request:
             raise ValueError("request list must not be empty")
@@ -166,6 +167,10 @@ class RememberingLLM:
         self, current_messages: list[HumanMessage], context: LLMContext
     ):
         chat_history = await self.fetch_chat_history(user_id=context.user_id)
+        context.chat_history = chat_history
+
+        if not self._fast_llm:
+            return current_messages
 
         prompt = (
             "Проанализируй сообщение пользователя.\n\n"
@@ -178,18 +183,20 @@ class RememberingLLM:
         logger.info(f"RequestAnalysis: {analysis}")
 
         context.analysis = analysis
-        context.chat_history = chat_history
 
         return current_messages
 
     async def _get_memories(self, context: LLMContext) -> str:
-        if context.analysis.needs_memory_search:
-            query = await self._get_search_query(
-                request=context.analysis.search_query,
-                chat_history=context.chat_history,
-            )
+        if context.analysis:
+            if context.analysis.needs_memory_search:
+                query = await self._get_search_query(
+                    request=context.analysis.search_query,
+                    chat_history=context.chat_history,
+                )
+            else:
+                query = context.analysis.search_query
         else:
-            query = context.analysis.search_query
+            query = describe_content(context.current_messages[-1].content)
 
         result = []
         if query:
